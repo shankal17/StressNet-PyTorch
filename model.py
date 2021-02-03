@@ -17,6 +17,7 @@ Created on: 2/3/2021 00:18 AM
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from utils import truncated_normal
 
 
 class SCSNet(nn.Module):
@@ -64,6 +65,15 @@ class SCSNet(nn.Module):
         x = F.relu(self.conv5(x))  # D7
         return x
 
+    def initialize(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                truncated_normal(m.weight.data, std=0.1)
+                nn.init.constant_(m.bias.data, 0.1)
+            if isinstance(m, nn.Linear):
+                truncated_normal(m.weight.data, std=0.1)
+                nn.init.constant_(m.bias.data, 0.1)
+
 
 if __name__ == '__main__':
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -73,6 +83,7 @@ if __name__ == '__main__':
 
     # test SCSNet
     scsnet_model = SCSNet()
+    scsnet_model.initialize()
     scsnet_model.cuda()
     output_feature = scsnet_model(sim_node, sim_load)
     print(output_feature.size())
