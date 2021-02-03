@@ -51,10 +51,10 @@ class SCSNet(nn.Module):
         x = self.pool(F.relu(self.conv2(x)))  # E3+E4
         x = x.view(-1, 64 * 6 * 8)  # E5
         x = self.dropout(F.relu(self.fc1(x)))  # E6
-        x = self.softplus(self.fc2(x))  # E7
+        x = F.softplus(self.fc2(x))  # E7
         x = torch.cat([x, input2], 1)  # FR
 
-        x = self.softplus(self.fc3(x))  # D1
+        x = F.softplus(self.fc3(x))  # D1
         x = self.dropout(F.relu(self.fc4(x)))  # D2
         x = x.view(-1, 64, 6, 8)  # D3
         x = self.convUp1(x)  # D4
@@ -64,3 +64,15 @@ class SCSNet(nn.Module):
         x = F.relu(self.conv5(x))  # D7
         return x
 
+
+if __name__ == '__main__':
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    batch_size, height, width = 256, 24, 32
+    sim_node = torch.randn(batch_size, 1, height, width).to(device)
+    sim_load = torch.randn(batch_size, 2).to(device)
+
+    # test SCSNet
+    scsnet_model = SCSNet()
+    scsnet_model.cuda()
+    output_feature = scsnet_model(sim_node, sim_load)
+    print(output_feature.size())
