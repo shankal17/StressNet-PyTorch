@@ -18,12 +18,13 @@ import time
 from torch.utils.tensorboard import SummaryWriter
 import torch.nn.functional as F
 
+
 class SingleChannelDataset(DATA.Dataset):
     def __init__(self, data_path):
-        self.dataset = torch.from_numpy(np.load(data_path))
+        self.dataset = np.load(data_path)
 
     def __getitem__(self, index):
-        inputs_geometry = self.dataset[index, 1:768].astype(np.float32)
+        inputs_geometry = self.dataset[index, 0:768].astype(np.float32)
         inputs_load = self.dataset[index, 768:770].astype(np.float32)
         outputs_stress = self.dataset[index, 770:].astype(np.float32)
 
@@ -35,11 +36,11 @@ class SingleChannelDataset(DATA.Dataset):
 
 def conf_from_argparse(parser):
     parser.add_argument(
-        '--batchSize', type=int, default=32, help='input batch size')
+        '--batchSize', type=int, default=512, help='input batch size')
     parser.add_argument(
         '--nWorkers', type=int, help='number of data loading workers', default=4)
     parser.add_argument(
-        '--nEpoch', type=int, default=25, help='number of epochs to train for')
+        '--nEpoch', type=int, default=5000, help='number of epochs to train for')
     parser.add_argument('--outF', type=str, default='results/trained_models_single/', help='output folder')
     parser.add_argument('--model', type=str, default='', help='model path')
     parser.add_argument('--dataset', type=str, default='dataset/all_data_s.npy', help="dataset path")
@@ -59,9 +60,9 @@ if __name__ == '__main__':
     shuffle_dataset = True
 
     stress = scsnet_data.dataset[:, 770:]
-    stress_mean = torch.mean(stress)
-    stress_min = torch.min(stress)
-    stress_max = torch.max(stress)
+    stress_mean = np.mean(stress)
+    stress_min = np.min(stress)
+    stress_max = np.max(stress)
     stress_statistic = [['mean', 'max', 'min'], [stress_mean, stress_min, stress_max]]
 
     train_num = int(np.floor(100000))
@@ -100,44 +101,43 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(scsnet.parameters(), lr=1e-03)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98)
 
-    results_dir = opt.outF +  "%s" % time.strftime("%Y%m%d-%H%M%S")
+    results_dir = opt.outF + "%s" % time.strftime("%Y%m%d-%H%M%S")
     logs_dir = results_dir + "/logs/"
+    height, width = 24, 32
+    resolution = height * width
+    min_loss = 100000
+    best_epoch = 1
 
     with SummaryWriter(logs_dir) as writer:
         for epoch in tqdm.tqdm(range(opt.nEpoch)):
-            losses = []
-            test_losses = []
-            for i, data in enumerate(train_loader, 0):
-                points, color, para, target = data
-                color = color.view(-1, points_num, 1)
-                # input_feature = torch.cat((points, color), dim=-1)
-                input_feature = points.transpose(2, 1)
-                input_feature, para, target = input_feature.cuda(), para.cuda(), target.cuda()
+            mse_train_losses = []
+            mse_test_losses = []
+            for i, data_train in enumerate(train_loader, 0):
+                geos_train, loads_train, stress_train = data_train
+                geos_train = geos_train.view(-1, 1, height, width)
+                geos_train, loads_train, stress_train = geos_train.cuda(), loads_train.cuda(), stress_train.cuda()
                 optimizer.zero_grad()
-                classifier = classifier.train()
-                # pred = classifier(input_feature, para)
-                pred, trans, trans_feat = classifier(input_feature, para)
-                pred = pred.view(-1, points_num)
-                target = target.view(-1, points_num)
-                loss = F.mse_loss(pred, target)
+                scsnet = scsnet.train()
+                pred_train = scsnet(geos_train, loads_train)
+                pred_train = pred_train.view(-1, resolution)
+                target = stress_train.view(-1, resolution)
+                loss = F.mse_loss(pred_train, target)
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
                 lr = scheduler.get_last_lr()
-                losses.append(loss.cpu().item())
+                mse_train_losses.append(loss.cpu().item())
 
-            if epoch % 10 == 0:
-                iVal, data_val = next(enumerate(test_loader, 0))
-                points_val, color_val, para_val, target_val = data_val
-                color_val = color_val.view(-1, points_num, 1)
-                # input_feature_val = torch.cat((points_val, color_val), dim=-1)
-                input_feature_val = points_val.transpose(2, 1)
-                input_feature_val, para_val, target_val = input_feature_val.cuda(), para_val.cuda(), target_val.cuda()
-                classifier = classifier.eval()
+            if epoch % 100 == 0:
+                iTest, data_test = next(enumerate(test_loader, 0))
+                geos_test, loads_test, stress_test = data_test
+                geos_test = geos_test.view(-1, 1, height, width)
+                geos_test, loads_test, stress_test = geos_test.cuda(), loads_test.cuda(), stress_test.cuda()
+                scsnet = scsnet.eval()
                 with torch.no_grad():
-                    pred_val, _, _ = classifier(input_feature_val, para_val)
-                pred_val = pred_val.view(-1, points_num)
-                target_val = target_val.view(-1, points_num)
+                    pred_val = scsnet(geos_test, loads_test)
+                pred_val = pred_val.view(-1, resolution)
+                target_val = stress_test.view(-1, resolution)
                 loss_val = F.mse_loss(pred_val, target_val)
                 print('[epoch %d] %s loss: %f min loss: %f at epoch %d ' %
                       (epoch, blue('val'), loss_val.item(), min_loss, best_epoch))
@@ -145,13 +145,13 @@ if __name__ == '__main__':
                     min_loss = loss_val
                     best_epoch = epoch
                     print("save model")
-                    torch.save(classifier.state_dict(), '%s/val_best_model.pth' % (results_dir))
-                test_losses.append(loss_val.cpu().item())
+                    torch.save(scsnet.state_dict(), '%s/val_best_model.pth' % (results_dir))
+                mse_test_losses.append(loss_val.cpu().item())
             print('[epoch %d] train loss: %f ' % (epoch, loss.item()))
 
             loss_dict = {
-                'Training loss': np.mean(losses),
-                'Test loss': np.mean(test_losses),
+                'Training loss': np.mean(mse_train_losses),
+                'Test loss': np.mean(mse_test_losses),
             }
             lr_dict = {'LearningRate': lr[0]}
 
